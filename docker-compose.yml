@@ -1,0 +1,131 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: al-raba7ab-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-al_raba7ab}
+      TZ: UTC
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/src/database/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - al-raba7ab-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-al_raba7ab}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    labels:
+      - "com.al-raba7ab.description=Al-Raba7ab PostgreSQL Database"
+
+  # Redis (For caching and sessions)
+  redis:
+    image: redis:7-alpine
+    container_name: al-raba7ab-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - al-raba7ab-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    labels:
+      - "com.al-raba7ab.description=Al-Raba7ab Redis Cache"
+
+  # Backend Server
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: ${NODE_ENV:-development}
+    container_name: al-raba7ab-server
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-5000}
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@postgres:5432/${DB_NAME:-al_raba7ab}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    ports:
+      - "${PORT:-5000}:${PORT:-5000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./server/src:/app/src
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - al-raba7ab-network
+    restart: unless-stopped
+    labels:
+      - "com.al-raba7ab.description=Al-Raba7ab Backend Server"
+
+  # Frontend Server
+  frontend:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:5000/api/v1}
+    container_name: al-raba7ab-client
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:5000/api/v1}
+      VITE_SOCKET_URL: ${VITE_SOCKET_URL:-http://localhost:5000}
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - al-raba7ab-network
+    restart: unless-stopped
+    labels:
+      - "com.al-raba7ab.description=Al-Raba7ab Frontend Client"
+
+  # Adminer (Database Management - Optional for development)
+  adminer:
+    image: adminer:latest
+    container_name: al-raba7ab-adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - al-raba7ab-network
+    restart: unless-stopped
+    labels:
+      - "com.al-raba7ab.description=Al-Raba7ab Database Admin UI"
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  al-raba7ab-network:
+    driver: bridge
